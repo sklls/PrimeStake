@@ -18,6 +18,9 @@ export default function AdminUsersPage() {
   const [description, setDescription] = useState('')
   const [msg, setMsg] = useState('')
   const [msgType, setMsgType] = useState<'success' | 'error'>('success')
+  // Shown once, then dropped from memory when dismissed — there is no second copy.
+  const [tempPw, setTempPw] = useState<{ name: string; email: string | null; password: string } | null>(null)
+  const [copied, setCopied] = useState(false)
 
   async function loadUsers() {
     const res = await fetch('/api/admin/users')
@@ -69,6 +72,29 @@ export default function AdminUsersPage() {
     }
   }
 
+  async function handlePasswordReset(user: User) {
+    if (!confirm(
+      `Set a new temporary password for ${user.display_name}?\n\n` +
+      `Their current password stops working immediately. You will see the new one once, ` +
+      `so be ready to pass it on.`
+    )) return
+    setMsg('')
+    setCopied(false)
+    const res = await fetch('/api/admin/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: user.id }),
+    })
+    if (res.ok) {
+      const d = await res.json()
+      setTempPw({ name: user.display_name, email: d.email, password: d.password })
+    } else {
+      const d = await res.json().catch(() => ({}))
+      setMsg(d.error ?? 'Could not reset that password')
+      setMsgType('error')
+    }
+  }
+
   if (loading) return <div className="text-slate py-10 text-center">Loading...</div>
 
   return (
@@ -84,6 +110,44 @@ export default function AdminUsersPage() {
             ? 'bg-green-500/10 border-green-500/30 text-green-400'
             : 'bg-crimson/10 border-crimson/30 text-crimson-light'
         }`}>{msg}</div>
+      )}
+
+      {/* New temporary password — the only time it is ever shown */}
+      {tempPw && (
+        <div className="bg-table border border-amber/40 rounded-xl p-5 space-y-3">
+          <h2 className="font-semibold text-white">
+            New password for <span className="text-amber">{tempPw.name}</span>
+          </h2>
+          <p className="text-sm text-slate">
+            Give this to {tempPw.email ?? 'them'} now. It is shown only once and cannot be
+            retrieved again — their old password already stops working.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 px-3 py-2 bg-rail rounded-lg text-amber font-mono text-base tracking-wider select-all">
+              {tempPw.password}
+            </code>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard?.writeText(tempPw.password)
+                setCopied(true)
+              }}
+              className="px-3 py-2 bg-raised hover:bg-rail text-white rounded-lg text-sm whitespace-nowrap"
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-xs text-slate-faded">
+            Ask them to sign in with it and then change it from the reset link on the sign-in page.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setTempPw(null); setCopied(false) }}
+            className="px-4 py-2 bg-raised hover:bg-rail text-white rounded-lg text-sm"
+          >
+            Done
+          </button>
+        </div>
       )}
 
       {/* Top-up form */}
@@ -146,6 +210,12 @@ export default function AdminUsersPage() {
                       className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-medium"
                     >
                       Top Up
+                    </button>
+                    <button
+                      onClick={() => handlePasswordReset(u)}
+                      className="px-3 py-1 bg-amber/20 hover:bg-amber/40 text-amber rounded text-xs font-medium"
+                    >
+                      Password
                     </button>
                     <button
                       onClick={() => handleReset(u)}

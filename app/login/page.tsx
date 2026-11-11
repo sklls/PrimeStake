@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase'
 
 export default function LoginPage() {
@@ -15,6 +16,18 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
+
+  // An expired or already-used recovery link is bounced here by /auth/callback.
+  // Read it from the URL directly rather than with useSearchParams, which would
+  // force this page out of static rendering.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('error') === 'auth_callback_failed') {
+      setError('That link has expired or was already used. Request a new one below.')
+      // Clear it so a refresh does not keep showing the same message.
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -115,6 +128,15 @@ export default function LoginPage() {
             {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : 'Create Account'}
           </button>
         </form>
+
+        {mode === 'login' && (
+          <Link
+            href="/forgot-password"
+            className="block text-center text-sm text-amber hover:text-amber-deep transition-colors mt-4"
+          >
+            Forgot your password?
+          </Link>
+        )}
 
         {mode === 'signup' && (
           <p className="text-xs text-slate text-center mt-4">
