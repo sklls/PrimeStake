@@ -1,0 +1,134 @@
+import { NextResponse } from 'next/server'
+import { z } from 'zod'
+import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase-server'
+
+const MarketSchema = z.object({
+  match_id: z.string().uuid(),
+  market_type: z.enum(['winner', 'top_scorer', 'over_under', 'live', 'custom']),
+  title: z.string().min(1).max(80).optional(), // required when market_type === 'custom'
+  house_edge_pct: z.number().min(0).max(20).optional(),
+  seed_amount: z.number().min(0).max(100000).optional(),
+  options: z.array(z.string().min(1)).min(2), // labels for bet options
+})
+
+const UpdateMarketSchema = z.object({
+  market_id: z.string().uuid(),
+  status: z.enum(['open', 'closed']).optional(),
+  title: z.string().min(1).max(80).optional(),
+})
+
+async function verifyAdmin() {
+  const supabase = createServerSupabaseClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data: profile } = await supabase
+    .from('profiles').select('role').eq('id', user.id).single()
+  return profile?.role === 'admin' ? user : null
+}
+
+export async function POST(request: Request) {
+  const admin_user = await verifyAdmin()
+  if (!admin_user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const body = await request.json()
+  const parsed = MarketSchema.safeParse(body)
+  if (!parsed.success) return NextResponse.json({ error: 'Invalid request', details: parsed.error.flatten() }, { status: 400 })
+
+  const { match_id, market_type, title, house_edge_pct, seed_amount, options } = parsed.data
+  if (market_type === 'custom' && !title?.trim()) {
+    return NextResponse.json({ error: 'Title is required for custom markets' }, { status: 400 })
+  }
+  const admin = createAdminClient()
+
+  const seed = seed_amount ?? 1000
+
+  // Create market
+  const { data: market, error: marketErr } = await admin
+    .from('markets')
+    .insert({
+      match_id,
+      market_type,
+      title: title?.trim() ?? null,
+      house_edge_pct: house_edge_pct ?? 5,
+      seed_amount: seed,
+    })
+    .select()
+    .single()
+
+  if (marketErr) return NextResponse.json({ error: marketErr.message }, { status: 500 })
+
+  // Split the house seed equally across the options. Seeding each option rather
+  // than the pool as a whole is what keeps opening prices sane — an unseeded
+  // option makes the first bet on it show absurd odds.
+  const perOption = Math.round((seed / options.length) * 100) / 100
+  const optionRows = options.map((label) => ({
+    market_id: market.id,
+    label,
+    seed_amount: perOption,
+  }))
+  const { error: optErr } = await admin.from('bet_options').insert(optionRows)
+  if (optErr) return NextResponse.json({ error: optErr.message }, { status: 500 })
+
+  return NextResponse.json({ success: true, market_id: market.id })
+}
+
+export async function PATCH(request: Request) {
+  const admin_user = await verifyAdmin()
+  if (!admin_user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const body = await request.json()
+  const parsed = UpdateMarketSchema.safeParse(body)
+  if (!parsed.success) return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+
+  const { market_id, status, title } = parsed.data
+  const admin = createAdminClient()
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (status !== undefined) updates.status = status
+  if (title !== undefined) updates.title = title.trim()
+
+  const { error } = await admin
+    .from('markets')
+    .update(updates)
+    .eq('id', market_id)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ success: true })
+}
+
+// DELETE /api/admin/markets?id=<market_id>
+// Voids all pending bets (refunds users), then deletes the market + its bet_options + bets
+export async function DELETE(request: Request) {
+  const admin_user = await verifyAdmin()
+  if (!admin_user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const { searchParams } = new URL(request.url)
+  const marketId = searchParams.get('id')
+  if (!marketId) return NextResponse.json({ error: 'Missing market id' }, { status: 400 })
+
+  const admin = createAdminClient()
+
+  // Refund all pending bets for this market
+  const { data: pendingBets } = await admin
+    .from('bets')
+    .select('id, user_id, amount')
+    .eq('market_id', marketId)
+    .eq('status', 'pending')
+
+  if (pendingBets && pendingBets.length > 0) {
+    for (const bet of pendingBets) {
+      await admin.rpc('topup_wallet', {
+        p_user_id: bet.user_id,
+        p_amount: bet.amount,
+        p_description: 'Refund: market deleted by admin',
+      })
+      await admin.from('bets').update({ status: 'void' }).eq('id', bet.id)
+    }
+  }
+
+  // Delete market (cascades to bet_options; bets have market_id FK but no cascade — void already)
+  const { error } = await admin.from('markets').delete().eq('id', marketId)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  return NextResponse.json({ success: true, refunded: pendingBets?.length ?? 0 })
+}
