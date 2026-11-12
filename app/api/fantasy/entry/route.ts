@@ -17,6 +17,12 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Sign in to enter a contest' }, { status: 401 })
 
+  // Referees score the matches these contests are built on.
+  const { data: me } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+  if (me?.role === 'umpire') {
+    return NextResponse.json({ error: 'Referee accounts cannot enter fantasy contests' }, { status: 403 })
+  }
+
   const body = await request.json()
   const parsed = EntrySchema.safeParse(body)
   if (!parsed.success) {

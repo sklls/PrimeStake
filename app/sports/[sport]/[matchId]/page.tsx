@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation'
 import { format } from 'date-fns'
 import Link from 'next/link'
 import MarketsSection from '@/components/betting/MarketsSection'
+import LiveScoreboard from '@/components/live/LiveScoreboard'
+import type { Scoreboard } from '@/lib/scoring/types'
 import { SPORTS, SportType } from '@/lib/sports'
 import { formatCredits } from '@/lib/credits'
 
@@ -13,7 +15,7 @@ export default async function MatchPage({ params }: { params: { sport: string; m
   if (!SPORTS[sport]) notFound()
 
   const supabase = createServerSupabaseClient()
-  const [{ data: match }, { data: { user } }] = await Promise.all([
+  const [{ data: match }, { data: { user } }, { data: scoreRow }] = await Promise.all([
     supabase
       .from('matches')
       .select('*, markets(*, bet_options(id, label, total_amount_bet, seed_amount))')
@@ -21,18 +23,22 @@ export default async function MatchPage({ params }: { params: { sport: string; m
       .eq('sport', sport)
       .single(),
     supabase.auth.getUser(),
+    // Readable by anyone, so watching a match needs no account.
+    supabase.from('match_scores').select('state').eq('match_id', params.matchId).maybeSingle(),
   ])
 
   if (!match) notFound()
 
   let userBalance: number | null = null
+  let isReferee = false
   if (user) {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('wallet_balance')
+      .select('wallet_balance, role')
       .eq('id', user.id)
       .single()
     userBalance = profile?.wallet_balance ?? null
+    isReferee = profile?.role === 'umpire'
   }
 
   return (
@@ -70,6 +76,12 @@ export default async function MatchPage({ params }: { params: { sport: string; m
         )}
       </div>
 
+      <LiveScoreboard
+        matchId={match.id}
+        teams={{ a: match.team_a, b: match.team_b }}
+        initial={(scoreRow?.state as Scoreboard | undefined) ?? null}
+      />
+
       <div>
         <h2 className="text-lg font-semibold text-white mb-4">Betting Markets</h2>
 
@@ -79,7 +91,13 @@ export default async function MatchPage({ params }: { params: { sport: string; m
           </div>
         )}
 
-        {user && userBalance !== null && (
+        {isReferee && (
+          <div className="bg-raised border border-rail rounded-lg p-4 mb-4 text-sm text-slate">
+            Referee accounts cannot place bets.
+          </div>
+        )}
+
+        {user && !isReferee && userBalance !== null && (
           <div className="bg-table border border-rail rounded-lg px-4 py-2 mb-4 flex items-center justify-between">
             <span className="text-sm text-slate">Your balance</span>
             <span className="font-bold text-amber">{formatCredits(userBalance)}</span>

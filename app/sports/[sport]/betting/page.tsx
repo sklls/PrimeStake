@@ -16,6 +16,15 @@ type Match = {
   status: string
   sport: SportType
   markets: { id: string; market_type: string; status: string }[]
+  /** One row, or an array of one, depending on how the embed is resolved. */
+  match_scores?: ScoreEmbed | ScoreEmbed[] | null
+}
+
+type ScoreEmbed = { state: { score?: { a: string; b: string }; status?: string; result?: string | null } | null }
+
+function scoreOf(m: Match) {
+  const row = Array.isArray(m.match_scores) ? m.match_scores[0] : m.match_scores
+  return row?.state ?? null
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -34,6 +43,7 @@ function StatusBadge({ status }: { status: string }) {
 
 function MatchCard({ match }: { match: Match }) {
   const openMarkets = match.markets?.filter(m => m.status === 'open').length ?? 0
+  const live = scoreOf(match)
   return (
     <Link href={`/sports/${match.sport}/${match.id}`}>
       <div className="bg-table hover:bg-raised border border-rail hover:border-amber/50 rounded-xl p-5 transition-all cursor-pointer">
@@ -46,12 +56,17 @@ function MatchCard({ match }: { match: Match }) {
         <div className="flex items-center justify-between">
           <div className="text-center flex-1">
             <p className="font-bold text-lg">{match.team_a}</p>
+            {live?.score && <p className="text-2xl font-bold text-white tabular-nums">{live.score.a || '–'}</p>}
           </div>
           <div className="text-slate font-bold text-sm px-4">VS</div>
           <div className="text-center flex-1">
             <p className="font-bold text-lg">{match.team_b}</p>
+            {live?.score && <p className="text-2xl font-bold text-white tabular-nums">{live.score.b || '–'}</p>}
           </div>
         </div>
+        {live && (
+          <p className="text-xs text-center mt-1 text-gold">{live.result ?? live.status}</p>
+        )}
         {match.venue && (
           <p className="text-xs text-slate text-center mt-2">{match.venue}</p>
         )}
@@ -78,6 +93,15 @@ export default async function SportBettingPage({ params }: { params: { sport: st
     .select('*, markets(id, market_type, status)')
     .eq('sport', sport)
     .order('match_date', { ascending: true })
+
+  // Fetched separately rather than embedded: if live scoring is not set up in
+  // the database yet, this query fails on its own and the list still loads.
+  const ids = (matches ?? []).map((m: Match) => m.id)
+  if (ids.length) {
+    const { data: scores } = await supabase.from('match_scores').select('match_id, state').in('match_id', ids)
+    const byId = new Map((scores ?? []).map(s => [s.match_id as string, { state: s.state }]))
+    for (const m of (matches ?? []) as Match[]) m.match_scores = byId.get(m.id) ?? null
+  }
 
   const now = new Date()
   const live      = (matches ?? []).filter((m: Match) => m.status === 'live')

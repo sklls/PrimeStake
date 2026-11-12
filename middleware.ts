@@ -52,6 +52,22 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  // Scoring console: referees and admins only
+  if (path.startsWith('/umpire')) {
+    if (!user) {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    if (profile?.role !== 'umpire' && profile?.role !== 'admin') {
+      return NextResponse.redirect(new URL('/', request.url))
+    }
+  }
+
   // Redirect logged-in users away from login page
   if (path === '/login' && user) {
     return NextResponse.redirect(new URL('/', request.url))
@@ -61,5 +77,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/admin/:path*', '/login'],
+  matcher: ['/dashboard/:path*', '/admin/:path*', '/umpire/:path*', '/login'],
 }

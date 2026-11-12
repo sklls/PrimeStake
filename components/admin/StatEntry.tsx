@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { playerPoints, type PlayerStats, type FantasySport } from '@/lib/fantasy/scoring'
+import { createClient } from '@/lib/supabase'
+import { fantasyStats } from '@/lib/scoring/stats'
+import type { Scoreboard } from '@/lib/scoring/types'
 
 type Player = { id: string; name: string; role: string; credits: number; team_id: string }
 type Team = { id: string; name: string }
@@ -121,6 +124,27 @@ export default function StatEntry({
     setMsg('')
   }
 
+  // Fill the grid from what the referee recorded. Saves and clean sheets are
+  // not in that record, so whatever is already entered for them is kept.
+  // Nothing is saved until the admin presses Save.
+  async function fillFromRecord() {
+    setError('')
+    setMsg('')
+    const { data, error: readErr } = await createClient()
+      .from('match_scores').select('state').eq('match_id', matchId).maybeSingle()
+    if (readErr || !data?.state) return setError('There is no referee record for this match yet.')
+
+    const filled = fantasyStats(sport, data.state as Scoreboard).filter(r => rows[r.player_id])
+    if (!filled.length) return setError('The referee record names no players from these squads.')
+
+    setRows(prev => {
+      const next = { ...prev }
+      for (const r of filled) next[r.player_id] = { ...next[r.player_id], ...r }
+      return next
+    })
+    setMsg(`Filled ${filled.length} player${filled.length === 1 ? '' : 's'} from the referee's record. Check, then save.`)
+  }
+
   async function save() {
     setSaving(true)
     setError('')
@@ -232,6 +256,13 @@ export default function StatEntry({
           className="px-4 py-2 bg-amber hover:bg-amber-deep disabled:bg-rail disabled:text-slate text-white rounded text-sm font-semibold"
         >
           {saving ? 'Saving…' : 'Save stats'}
+        </button>
+        <button
+          type="button"
+          onClick={fillFromRecord}
+          className="px-4 py-2 bg-raised hover:bg-rail text-white rounded text-sm font-medium"
+        >
+          Fill from referee&apos;s record
         </button>
         <span className="text-xs text-slate">Safe to save as often as you like — no money moves.</span>
       </div>

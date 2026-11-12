@@ -56,7 +56,8 @@ export default function Navbar() {
         <div className="flex items-center gap-6">
           {navLink('/', 'Sports')}
           {navLink('/leaderboard', 'Leaderboard')}
-          {user && navLink('/dashboard', 'My Bets')}
+          {user && user.role !== 'umpire' && navLink('/dashboard', 'My Bets')}
+          {(user?.role === 'umpire' || user?.role === 'admin') && navLink('/umpire', 'Score')}
           {user?.role === 'admin' && navLink('/admin', 'Admin')}
           {user?.role === 'admin' && navLink('/admin/ledger', 'Ledger')}
 

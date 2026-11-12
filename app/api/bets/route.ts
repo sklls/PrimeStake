@@ -15,6 +15,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  // A referee enters every event before anyone else can see it, so referee
+  // accounts may not bet at all.
+  const { data: me } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+  if (me?.role === 'umpire') {
+    return NextResponse.json({ error: 'Referee accounts cannot place bets' }, { status: 403 })
+  }
+
   const body = await request.json()
   const parsed = BetSchema.safeParse(body)
   if (!parsed.success) {

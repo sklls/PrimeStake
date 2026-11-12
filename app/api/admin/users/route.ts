@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server'
+import { z } from 'zod'
 import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase-server'
+
+const RoleSchema = z.object({
+  id: z.string().uuid(),
+  // Only between player and referee. Admin is never granted or removed here.
+  role: z.enum(['user', 'umpire']),
+})
 
 async function verifyAdmin() {
   const supabase = createServerSupabaseClient()
@@ -49,6 +56,28 @@ export async function GET() {
   )
 
   return NextResponse.json(result)
+}
+
+// PATCH /api/admin/users  { id, role: 'user' | 'umpire' } — make an account a
+// referee, or return it to a normal player.
+export async function PATCH(request: Request) {
+  const admin_user = await verifyAdmin()
+  if (!admin_user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
+  const parsed = RoleSchema.safeParse(await request.json().catch(() => null))
+  if (!parsed.success) return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
+  const { id, role } = parsed.data
+
+  const admin = createAdminClient()
+  const { data: target } = await admin.from('profiles').select('role').eq('id', id).maybeSingle()
+  if (!target) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+  if (target.role === 'admin') {
+    return NextResponse.json({ error: 'Admin accounts keep their role' }, { status: 400 })
+  }
+
+  const { error } = await admin.from('profiles').update({ role }).eq('id', id)
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ success: true, role })
 }
 
 // DELETE /api/admin/users?id=<user_id>  — resets wallet to 0

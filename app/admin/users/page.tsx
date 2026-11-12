@@ -72,6 +72,28 @@ export default function AdminUsersPage() {
     }
   }
 
+  async function handleRole(user: User) {
+    const toReferee = user.role !== 'umpire'
+    if (!confirm(toReferee
+      ? `Make ${user.display_name} a referee?\n\nThey will be able to score matches live, and will no longer be able to bet or enter fantasy contests.`
+      : `Return ${user.display_name} to a normal player account?`)) return
+    setMsg('')
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: user.id, role: toReferee ? 'umpire' : 'user' }),
+    })
+    const d = await res.json().catch(() => ({}))
+    if (res.ok) {
+      setMsg(toReferee ? `${user.display_name} is now a referee` : `${user.display_name} is a player again`)
+      setMsgType('success')
+      loadUsers()
+    } else {
+      setMsg(d.error ?? 'Could not change that role')
+      setMsgType('error')
+    }
+  }
+
   async function handlePasswordReset(user: User) {
     if (!confirm(
       `Set a new temporary password for ${user.display_name}?\n\n` +
@@ -198,7 +220,9 @@ export default function AdminUsersPage() {
               <tr key={u.id} className="border-b border-rail/50">
                 <td className="px-4 py-3">
                   <p className="font-medium text-white">{u.display_name}</p>
-                  <p className="text-xs text-slate capitalize">{u.role}</p>
+                  <p className={`text-xs capitalize ${u.role === 'umpire' ? 'text-gold' : 'text-slate'}`}>
+                    {u.role === 'umpire' ? 'referee' : u.role}
+                  </p>
                 </td>
                 <td className="px-4 py-3 text-right font-semibold text-green-400">
                   {formatCredits(Number(u.wallet_balance))}
@@ -211,6 +235,18 @@ export default function AdminUsersPage() {
                     >
                       Top Up
                     </button>
+                    {u.role !== 'admin' && (
+                      <button
+                        onClick={() => handleRole(u)}
+                        className={`px-3 py-1 rounded text-xs font-medium ${
+                          u.role === 'umpire'
+                            ? 'bg-gold/20 hover:bg-gold/30 text-gold'
+                            : 'bg-raised hover:bg-rail text-slate'
+                        }`}
+                      >
+                        {u.role === 'umpire' ? 'Unmake referee' : 'Make referee'}
+                      </button>
+                    )}
                     <button
                       onClick={() => handlePasswordReset(u)}
                       className="px-3 py-1 bg-amber/20 hover:bg-amber/40 text-amber rounded text-xs font-medium"

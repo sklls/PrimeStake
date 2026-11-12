@@ -6,6 +6,9 @@ import { SPORTS, ALL_SPORTS, SPORT_MARKETS, PLAYER_PICKER_MARKETS, SportType, ha
 import StatEntry from '@/components/admin/StatEntry'
 import type { FantasySport } from '@/lib/fantasy/scoring'
 import { formatCredits } from '@/lib/credits'
+import { createClient } from '@/lib/supabase'
+import { suggest, type Suggestion } from '@/lib/scoring/suggest'
+import type { Scoreboard } from '@/lib/scoring/types'
 
 type Bet = { id: string; user_id: string; amount: number; status: string; placed_at: string; profiles?: { display_name: string } }
 type BetOption = { id: string; label: string; total_amount_bet: number; bets?: Bet[] }
@@ -82,8 +85,32 @@ export default function AdminMatchesPage() {
     setContests(byMatch)
   }, [])
 
+  // The referee's live record for each match, read straight from the public
+  // score table. If live scoring is not set up yet this simply stays empty.
+  const [records, setRecords] = useState<Record<string, { state: Scoreboard; ended_at: string | null }>>({})
+  const loadRecords = useCallback(async () => {
+    const { data, error } = await createClient().from('match_scores').select('match_id, state, ended_at')
+    if (error || !data) return
+    const byMatch: Record<string, { state: Scoreboard; ended_at: string | null }> = {}
+    for (const r of data) byMatch[r.match_id as string] = { state: r.state as Scoreboard, ended_at: r.ended_at }
+    setRecords(byMatch)
+  }, [])
+
   useEffect(() => { loadMatches() }, [loadMatches])
   useEffect(() => { loadContests() }, [loadContests])
+  useEffect(() => { loadRecords() }, [loadRecords])
+
+  /** What the referee's record says about a market. Never settles anything. */
+  function suggestionFor(match: Match, market: Market): Suggestion | null {
+    const rec = records[match.id]
+    if (!rec?.state) return null
+    return suggest(
+      market.market_type,
+      (market.bet_options ?? []).map(o => ({ id: o.id, label: o.label })),
+      rec.state,
+      { a: match.team_a, b: match.team_b },
+    )
+  }
 
   async function createContest(matchId: string) {
     const raw = parseFloat(feeInput[matchId] ?? '100')
@@ -390,6 +417,19 @@ export default function AdminMatchesPage() {
                   <p className="text-xs text-slate">
                     {format(new Date(match.match_date), 'dd MMM yyyy, h:mm a')} · {match.venue ?? 'TBD'}
                   </p>
+                  {records[match.id]?.state && (
+                    <p className="text-xs mt-1">
+                      <span className="text-slate">Referee: </span>
+                      <span className="text-white font-semibold tabular-nums">
+                        {records[match.id].state.score.a || '–'} – {records[match.id].state.score.b || '–'}
+                      </span>
+                      <span className={records[match.id].ended_at ? 'text-amber' : 'text-crimson-light'}>
+                        {' · '}{records[match.id].state.result ?? records[match.id].state.status}
+                        {records[match.id].ended_at ? ' (final)' : ' (live)'}
+                      </span>
+                      {' · '}<a href={`/umpire/${match.id}`} className="text-slate underline">open record</a>
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-xs px-2 py-0.5 rounded-full ${
@@ -589,13 +629,30 @@ export default function AdminMatchesPage() {
                         </div>
                       </div>
 
+                      {market.status !== 'settled' && (() => {
+                        const s = suggestionFor(match, market)
+                        if (!s || (!s.note && !s.option_id)) return null
+                        const label = market.bet_options?.find(o => o.id === s.option_id)?.label
+                        return (
+                          <p className="text-xs mt-2 pl-5">
+                            {s.note && <span className="text-slate">{s.note}</span>}
+                            {label && <span className="text-amber"> · Suggested winner: <strong>{label}</strong> (confirm below)</span>}
+                          </p>
+                        )
+                      })()}
+
                       {expandedMarkets.has(market.id) && (
                         <div className="space-y-2 mt-3">
                           {market.bet_options?.map(opt => (
                             <div key={opt.id} className="bg-table border border-rail rounded p-3">
                               <div className="flex items-center justify-between mb-2">
                                 <div>
-                                  <p className="text-xs font-medium text-white">{opt.label}</p>
+                                  <p className="text-xs font-medium text-white">
+                                    {opt.label}
+                                    {suggestionFor(match, market)?.option_id === opt.id && (
+                                      <span className="ml-2 px-1.5 py-0.5 rounded bg-amber/20 text-amber">suggested by the referee&apos;s record</span>
+                                    )}
+                                  </p>
                                   <p className="text-xs text-slate">{formatCredits(Number(opt.total_amount_bet))} total</p>
                                 </div>
                                 {(market.status === 'closed' || market.status === 'open') && (
