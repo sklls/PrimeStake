@@ -5,6 +5,7 @@ import type { Scoreboard, Side, Teams } from '@/lib/scoring/types'
 import type { CricketDetail } from '@/lib/scoring/cricket'
 import type { FootballDetail } from '@/lib/scoring/football'
 import { clockSeconds } from '@/lib/scoring/football'
+import { headline } from '@/lib/scoring/headline'
 import type { SetsDetail } from '@/lib/scoring/sets'
 import type { BasketballDetail } from '@/lib/scoring/basketball'
 import type { PoolDetail } from '@/lib/scoring/pool'
@@ -42,6 +43,7 @@ export default function ScoreboardView({
   const finished = board.phase === 'finished'
   const highlight: Side | null =
     board.sport === 'cricket' ? ((board.detail as unknown as CricketDetail).batting ?? null) : null
+  const { big, small } = headline(board)
 
   return (
     <div className="bg-table border border-rail rounded-xl overflow-hidden">
@@ -71,9 +73,9 @@ export default function ScoreboardView({
               {highlight === side && <span className="ml-1 text-amber" title="Batting">●</span>}
             </p>
             <p className="text-4xl font-bold text-white tabular-nums leading-tight mt-1">
-              {board.score[side] || '–'}
+              {big[side] || '–'}
             </p>
-            {board.sub[side] && <p className="text-xs text-slate mt-0.5">{board.sub[side]}</p>}
+            {small[side] && <p className="text-xs text-slate mt-0.5">{small[side]}</p>}
           </div>
         ))}
       </div>

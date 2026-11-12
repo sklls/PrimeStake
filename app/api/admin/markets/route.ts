@@ -1,15 +1,9 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createServerSupabaseClient, createAdminClient } from '@/lib/supabase-server'
+import { MarketSchema } from '@/lib/markets'
 
-const MarketSchema = z.object({
-  match_id: z.string().uuid(),
-  market_type: z.enum(['winner', 'top_scorer', 'over_under', 'live', 'custom']),
-  title: z.string().min(1).max(80).optional(), // required when market_type === 'custom'
-  house_edge_pct: z.number().min(0).max(20).optional(),
-  seed_amount: z.number().min(0).max(100000).optional(),
-  options: z.array(z.string().min(1)).min(2), // labels for bet options
-})
+// Creation rules live in lib/markets.ts so a test can hold them to the admin form.
 
 const UpdateMarketSchema = z.object({
   market_id: z.string().uuid(),

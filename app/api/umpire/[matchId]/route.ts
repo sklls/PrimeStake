@@ -75,22 +75,33 @@ export async function GET(_req: Request, { params }: Ctx) {
 }
 
 export async function POST(request: Request, { params }: Ctx) {
-  const staff = await getStaff()
-  if (!staff) return json({ error: 'Forbidden' }, 403)
   if (!Id.safeParse(params.matchId).success) return json({ error: 'Bad match id' }, 400)
-
   const parsed = Body.safeParse(await request.json().catch(() => null))
   if (!parsed.success) return json({ error: 'Invalid request' }, 400)
   const body = parsed.data
 
+  // Every referee tap waits on these, and each is a trip to the database, so
+  // they go out together rather than one after another. Nothing read here is
+  // returned to a caller who turns out not to be staff.
   const admin = createAdminClient()
-  const match = await loadMatch(admin, params.matchId)
+  const [staff, match, loadedScore, loadedEvents] = await Promise.all([
+    getStaff(),
+    loadMatch(admin, params.matchId),
+    loadScore(admin, params.matchId),
+    loadEvents(admin, params.matchId),
+  ])
+  if (!staff) return json({ error: 'Forbidden' }, 403)
   if (!match) return json({ error: 'Match not found' }, 404)
   const sport = match.sport as SportType
 
-  let score = await loadScore(admin, match.id)
-  let events = await loadEvents(admin, match.id)
+  let score = loadedScore
+  let events = loadedEvents
   const fresh = () => ({ score, events })
+
+  // Squads are only needed when an entry names a player; most taps do not.
+  let squadsCache: Squads | null = null
+  const squadsFor = async (needed: boolean): Promise<Squads> =>
+    needed ? (squadsCache ??= await loadSquads(admin, match)) : { a: [], b: [] }
 
   // ── start ──
   if (body.action === 'start') {
@@ -161,7 +172,6 @@ export async function POST(request: Request, { params }: Ctx) {
     return json({ error: `${score.scorer_name ?? 'Someone else'} is scoring this match. Take over to score.`, ...fresh() }, 409)
   }
 
-  const squads = await loadSquads(admin, match)
   const teams = teamsOf(match)
 
   // ── settings ──
@@ -185,6 +195,7 @@ export async function POST(request: Request, { params }: Ctx) {
     if (body.action === 'void') {
       patch = { voided_at: now, voided_by: staff.id }
     } else {
+      const squads = await squadsFor(Boolean(body.player_id || body.player2_id))
       const p1 = resolvePlayer(squads, body.player_id ?? null)
       const p2 = resolvePlayer(squads, body.player2_id ?? null)
       if (p1 === false || p2 === false) return json({ error: 'That player is not in either squad' }, 400)
@@ -214,6 +225,7 @@ export async function POST(request: Request, { params }: Ctx) {
   } else {
     const ev = body.event
     if (ev.type === 'end_match') return json({ error: 'Use End match' }, 400)
+    const squads = await squadsFor(Boolean(ev.player_id || ev.player2_id))
     const p1 = resolvePlayer(squads, ev.player_id ?? null)
     const p2 = resolvePlayer(squads, ev.player2_id ?? null)
     if (p1 === false || p2 === false) return json({ error: 'That player is not in either squad' }, 400)

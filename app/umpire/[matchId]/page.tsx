@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { TapQueue } from '@/lib/tap-queue'
 import Link from 'next/link'
 import { format } from 'date-fns'
 import { createClient } from '@/lib/supabase'
@@ -58,20 +59,74 @@ export default function UmpireMatchPage({ params }: { params: { matchId: string 
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [pending, setPending] = useState(0)
+  const [dropNotice, setDropNotice] = useState('')
   const online = useOnline()
   const { sheet, choose } = useSheet()
+
+  // The version every write must name. Kept in a ref, not read from state:
+  // queued taps go out back to back, faster than React re-renders, and each
+  // must carry the version the previous one produced.
+  const versionRef = useRef(0)
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/umpire/${id}`, { cache: 'no-store' })
     const j = await res.json().catch(() => ({}))
     if (!res.ok) { setLoadError(j.error ?? 'Could not load this match'); return }
+    versionRef.current = (j as Payload).score?.version ?? 0
     setData(j as Payload)
   }, [id])
 
   useEffect(() => { load() }, [load])
 
+  const act = useCallback(async (body: Record<string, unknown>): Promise<boolean> => {
+    setBusy(true)
+    setError('')
+    try {
+      const res = await fetch(`/api/umpire/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, version: versionRef.current }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if ('score' in j || 'events' in j) {
+        if (typeof j.score?.version === 'number') versionRef.current = j.score.version
+        setData(prev => prev ? { ...prev, score: j.score ?? prev.score, events: j.events ?? prev.events } : prev)
+      }
+      if (!res.ok) { setError(j.error ?? 'Something went wrong'); return false }
+      return true
+    } catch {
+      setError('No connection. That tap was not saved — try again.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [id])
+
+  // Taps queue instead of being lost while a save is in flight.
+  const actRef = useRef(act)
+  actRef.current = act
+  const queueRef = useRef<TapQueue<Draft> | null>(null)
+  if (!queueRef.current) {
+    queueRef.current = new TapQueue<Draft>({
+      run: draft => actRef.current({
+        action: 'event',
+        event: { side: null, player_id: null, player2_id: null, data: {}, ...draft },
+      }),
+      onChange: setPending,
+      onDrop: n => setDropNotice(
+        `The ${n === 1 ? 'tap' : `${n} taps`} made after it ${n === 1 ? 'was' : 'were'} not saved. Enter ${n === 1 ? 'it' : 'them'} again if ${n === 1 ? 'it' : 'they'} happened.`,
+      ),
+    })
+  }
+  const send = async (draft: Draft) => {
+    setDropNotice('')
+    queueRef.current!.push(draft)
+    return true
+  }
+
   // Follow the score row so a take-over or a second device is noticed at once.
-  const version = data?.score?.version ?? 0
+  // Our own queued writes also arrive here; those are skipped while the queue runs.
   useEffect(() => {
     const supabase = createClient()
     const channel = supabase
@@ -79,41 +134,13 @@ export default function UmpireMatchPage({ params }: { params: { matchId: string 
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'match_scores', filter: `match_id=eq.${id}` },
         payload => {
+          if (queueRef.current?.running) return
           const v = (payload.new as { version?: number } | null)?.version ?? 0
-          if (v > version) load()
+          if (v > versionRef.current) load()
         })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [id, version, load])
-
-  async function act(body: Record<string, unknown>): Promise<boolean> {
-    if (!data) return false
-    setBusy(true)
-    setError('')
-    try {
-      const res = await fetch(`/api/umpire/${id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, version: data.score?.version ?? 0 }),
-      })
-      const j = await res.json().catch(() => ({}))
-      if ('score' in j || 'events' in j) {
-        setData(prev => prev ? { ...prev, score: j.score ?? prev.score, events: j.events ?? prev.events } : prev)
-      }
-      if (!res.ok) { setError(j.error ?? 'Something went wrong'); return false }
-      return true
-    } catch {
-      setError('No connection. Nothing was saved — try again.')
-      return false
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const send = (draft: Draft) => act({
-    action: 'event',
-    event: { side: null, player_id: null, player2_id: null, data: {}, ...draft },
-  })
+  }, [id, load])
 
   const teams: Teams = useMemo(
     () => ({ a: data?.match.team_a ?? '', b: data?.match.team_b ?? '' }),
@@ -240,20 +267,27 @@ export default function UmpireMatchPage({ params }: { params: { matchId: string 
       {mine && board && (
         <>
           <div className="bg-table border border-rail rounded-xl p-3">
+            {/* Not disabled while saving: taps queue and go out in order. */}
             <Console
               board={board} settings={score!.settings} teams={teams} squads={squads}
-              busy={busy || !online} send={send} choose={choose}
+              busy={!online} send={send} choose={choose}
             />
+            {pending > 0 && (
+              <p className="text-xs text-slate text-center mt-2">
+                Saving {pending} tap{pending === 1 ? '' : 's'}…
+              </p>
+            )}
+            {dropNotice && <p className="text-xs text-gold text-center mt-2">{dropNotice}</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <button
-              disabled={busy || !lastLive}
+              disabled={busy || pending > 0 || !lastLive}
               onClick={() => lastLive && act({ action: 'void', seq: lastLive.seq })}
               className="min-h-14 rounded-xl bg-raised text-white font-semibold disabled:opacity-40"
             >↶ Undo last</button>
             <button
-              disabled={busy}
+              disabled={busy || pending > 0}
               onClick={() => {
                 const r = board.result ? `\n\n${board.result}` : '\n\nNo result has been reached yet.'
                 if (confirm(`Blow the final whistle? Betting on this match closes.${r}`)) act({ action: 'end' })
@@ -285,7 +319,7 @@ export default function UmpireMatchPage({ params }: { params: { matchId: string 
             {recent.map(r => (
               <li key={r.seq}>
                 <button
-                  disabled={!canCorrect || busy}
+                  disabled={!canCorrect || busy || pending > 0}
                   onClick={() => correct(r.seq)}
                   className="w-full text-left px-4 py-3 flex gap-3 text-sm disabled:cursor-default"
                 >
